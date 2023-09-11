@@ -7,11 +7,11 @@ import (
 	"os"
 	"strings"
 
-	auth "github.com/thalesgroupsm/ldk-golang-auth-api"
-
 	"github.com/jessevdk/go-flags"
 	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
+	auth "github.com/thalesgroupsm/ldk-golang-auth-api"
+	licenseApi "github.com/thalesgroupsm/ldk-golang-licensing-native-api"
 )
 
 type Environment struct {
@@ -38,7 +38,7 @@ var (
 	Log                        *logrus.Entry
 	Version                    = "9.0.0"
 	Build                      string
-	L                          *LicenseApi
+	L                          *licenseApi.LicenseApi
 	InvalidCodeChallengeMethod = errors.New("invalid CodeChallengeMethod")
 )
 
@@ -133,8 +133,8 @@ func main() {
 		}
 
 	}
-	L = NewLicenseApi(Env.VendorId)
+	L = licenseApi.NewLicenseApi(Env.VendorId)
 	//hasp_config(accsstoken)
-	L.LoginByIdentity("792409087108542559")
+	LoginByIdentity(L, "792409087108542559")
 
 }
