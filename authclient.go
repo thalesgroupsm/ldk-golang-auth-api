@@ -177,7 +177,7 @@ func (a *AuthClient) GetStoredAuthz() (err error) {
 				var authToken AuthToken
 				err = json.Unmarshal(token, &authToken)
 				if err != nil {
-					Log.Errorf("invalid auth token:%#v", err)
+					Log.Errorf("invalid auth token:%v", err)
 				} else {
 					a.Atoken = &authToken
 				}
