@@ -3,5 +3,19 @@
 	<body>
 		<h1>Login successful!</h1>
 		<h2>You can close this window and return to the licensed application.</h2>
+        <button id="callGo" type="submit">
+			Logout
+		</button>
+		<script src="https://code.jquery.com/jquery-2.1.0.min.js"></script>
+		<script type="text/javascript">
+		$(document).ready(function(){
+			$("#callGo").on('click', function(){
+				$.ajax({
+					url:"http://localhost:9000/logout",
+					method: "POST",
+				});
+			});
+		});
+		</script>
 	</body>
 </html>

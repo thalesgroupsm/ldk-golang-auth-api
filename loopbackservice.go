@@ -6,6 +6,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
+
+	keyTar "github.com/thalesgroupsm/ldk-golang-auth-api/keytar"
 
 	"github.com/skratchdot/open-golang/open"
 )
@@ -15,6 +18,28 @@ func cleanup(server *http.Server) {
 	// we run this as a goroutine so that this function falls through and
 	// the socket to the browser gets flushed/closed before the server goes away
 	go server.Close()
+}
+func (a *AuthClient) logoutHandler(w http.ResponseWriter, r *http.Request) {
+	Log.Info("logout")
+	if a.Aconfig.StoreAuthz == false {
+		// Create a keychain
+		keychain, err := keyTar.GetKeychain()
+		if err != nil {
+			Log.Errorf("unable to create keychain, %s", err)
+			return
+		}
+
+		err = keychain.DeletePassword(
+			a.KeytarService,
+			a.KeytarAccount,
+		)
+		if err != nil {
+			Log.Errorf("delete refresh token failed, %s", err)
+		}
+	}
+
+	cleanup(a.loopBackServer)
+
 }
 func (a *AuthClient) loopBackHandler(w http.ResponseWriter, r *http.Request) {
 	// get the authorization code
@@ -43,16 +68,10 @@ func (a *AuthClient) loopBackHandler(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, a.WelcomeHtml)
 	Log.Info("Successfully logged into licensed application API.")
 
-	// close the HTTP server
-	cleanup(a.loopBackServer)
 }
 
 func (a *AuthClient) StartLoopbackService(authorizationURL string) error {
-	// start a web server to listen on a callback URL
-	a.loopBackServer = &http.Server{Addr: a.Aconfig.RedirectUri}
-
-	// define a handler that will get the authorization code, call the token endpoint, and close the HTTP server
-	http.HandleFunc("/v1/callback", a.loopBackHandler)
+	var err error
 
 	// parse the redirect URL for the port number
 	u, err := url.Parse(a.Aconfig.RedirectUri)
@@ -68,6 +87,12 @@ func (a *AuthClient) StartLoopbackService(authorizationURL string) error {
 		Log.Errorf("licensed application: can't listen to port %s: %s\n", port, err)
 		return err
 	}
+	a.WelcomeHtml = strings.Replace(a.WelcomeHtml, ":9000", port, len(port))
+
+	// start a web server to listen on a callback URL
+	a.loopBackServer = &http.Server{Addr: a.Aconfig.RedirectUri}
+	http.HandleFunc("/v1/callback", a.loopBackHandler)
+	http.HandleFunc("/logout", a.logoutHandler)
 	// open a browser window to the authorizationURL
 	err = open.Start(authorizationURL)
 	if err != nil {

@@ -2,18 +2,19 @@ package auth_client
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/user"
 	"strings"
+
+	keyTar "github.com/thalesgroupsm/ldk-golang-auth-api/keytar"
 
 	cv "github.com/nirasan/go-oauth-pkce-code-verifier"
 	"github.com/sirupsen/logrus"
-	"github.com/spf13/viper"
 )
 
 var (
@@ -25,7 +26,8 @@ var (
 	NotFoundCode        = errors.New("could not find 'code' URL parameter")
 	NotFoundAccessToken = errors.New("could not retrieve access token")
 	StoreTokenErr       = errors.New("could not store access token")
-	GetTokenErr         = errors.New("could not get access token")
+	GetAccessTokenErr   = errors.New("could not get access token")
+	GetRefreshTokenErr  = errors.New("could not get refresh token")
 )
 
 type AuthClient struct {
@@ -35,6 +37,8 @@ type AuthClient struct {
 	loopBackServer *http.Server
 	Aconfig        *AuthConfig
 	Atoken         *AuthToken
+	KeytarAccount  string
+	KeytarService  string
 }
 
 func NewAuthClient(authConfig *AuthConfig) *AuthClient {
@@ -43,19 +47,73 @@ func NewAuthClient(authConfig *AuthConfig) *AuthClient {
 		Log.Errorf("invalid welcome html file, %v", err)
 		return nil
 	}
-	return &AuthClient{
-		WelcomeHtml: string(html),
-		Aconfig:     authConfig,
+	user, err := user.Current()
+	if err != nil {
+		Log.Errorf("invalid current user, %v", err)
+		return nil
 	}
+	return &AuthClient{
+		WelcomeHtml:   string(html),
+		Aconfig:       authConfig,
+		KeytarAccount: user.Username,
+		KeytarService: authConfig.AuthzUri,
+	}
+}
+func (a *AuthClient) refreshTokens() error {
+	var token AuthToken
+	data := fmt.Sprintf(
+		"grant_type=refresh_token&client_id=%s"+
+			"&refresh_token=%s",
+		a.Aconfig.ClientId, a.Atoken.RefreshToken)
+
+	payload := strings.NewReader(data)
+
+	// create the request and execute it
+	req, _ := http.NewRequest("POST", a.Aconfig.TokenUri, payload)
+	req.Header.Add("content-type", "application/x-www-form-urlencoded")
+	req.Header.Add("Connection", "keep-alive")
+
+	client := http.Client{}
+	tr := &http.Transport{
+		//Proxy: http.ProxyURL(proxyUrl),
+	}
+	client.Transport = tr
+	res, err := client.Do(req)
+	if err != nil {
+		Log.Errorf("snap: HTTP error: %s", err)
+		return err
+	}
+
+	// process the response
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+
+	// unmarshal the json into a string map
+
+	err = json.Unmarshal(body, &token)
+
+	// retrieve the access token out of the map, and return to caller
+	if token.AccessToken != "" {
+		a.Atoken = &token
+		return nil
+	}
+	return GetRefreshTokenErr
 }
 
 // AuthorizeUser: implements the PKCE OAuth2 flow.
 
 func (a *AuthClient) AuthorizeUser(ctx context.Context) error {
+	var err error
 	a.Aconfig.LogSetup()
 	a.Aconfig.SetPkce()
-
-	err := a.Aconfig.SetRedirectUri()
+	if a.Atoken != nil && a.Atoken.RefreshToken != "" {
+		err = a.refreshTokens()
+		if err == nil {
+			Log.Infof("refresh token success!")
+			return nil
+		}
+	}
+	err = a.Aconfig.SetRedirectUri()
 	if err != nil {
 		return err
 	}
@@ -73,8 +131,7 @@ func (a *AuthClient) AuthorizeUser(ctx context.Context) error {
 	if a.Aconfig.UsePkce == true {
 		authorizationURL = fmt.Sprintf(
 			a.Aconfig.AuthzUri+
-				"?scope=openid"+
-				"&response_type=code&client_id=%s"+
+				"?response_type=code&client_id=%s"+
 				"&redirect_uri=%s"+
 				"&code_challenge=%s"+
 				"&code_challenge_method=%s",
@@ -82,11 +139,13 @@ func (a *AuthClient) AuthorizeUser(ctx context.Context) error {
 	} else {
 		authorizationURL = fmt.Sprintf(
 			a.Aconfig.AuthzUri+
-				"?scope=openid"+
-				"&response_type=code&client_id=%s"+
+				"?response_type=code&client_id=%s"+
 				"&redirect_uri=%s"+
 				"&state=%s",
 			a.Aconfig.ClientId, a.Aconfig.RedirectUri, a.Aconfig.State)
+	}
+	if a.Aconfig.Scope != "" {
+		authorizationURL = fmt.Sprintf(authorizationURL+"&scope=%s", a.Aconfig.Scope)
 	}
 
 	err = a.StartLoopbackService(authorizationURL)
@@ -158,33 +217,30 @@ func (a *AuthClient) getAccessToken(authorizationCode string) error {
 }
 
 func (a *AuthClient) GetStoredAuthz() (err error) {
-	var token []byte
-	err = GetTokenErr
+
+	err = GetAccessTokenErr
+	var password string
+	var authToken AuthToken
+	var keychain keyTar.Keychain
 	a.Aconfig.LogSetup()
 	if a.Aconfig.StoreAuthz == true {
-		viper.SetConfigFile("./auth.json")
-		err = viper.ReadInConfig()
+		// Create a keychain
+		keychain, err = keyTar.GetKeychain()
 		if err != nil {
-			return GetTokenErr
+			Log.Errorf("unable to create keychain, %s", err)
+			return err
 		}
-		if viper.IsSet("AccessToken") {
-			encodeToken := viper.Get("AccessToken")
-			if encodeToken != nil {
-				token, err = base64.StdEncoding.DecodeString(fmt.Sprintf("%v", encodeToken))
-				if err != nil {
-					Log.Errorf("decode auth err:%v", err)
-				}
-				var authToken AuthToken
-				err = json.Unmarshal(token, &authToken)
-				if err != nil {
-					Log.Errorf("invalid auth token:%v", err)
-				} else {
-					a.Atoken = &authToken
-				}
 
-			}
+		// Test that a non-existent lookup fail
+		password, err = keychain.GetPassword(
+			a.KeytarService,
+			a.KeytarAccount,
+		)
+		if password == "" || err != nil {
+			Log.Errorf("retrieval of non-existent service/account password succeeded, %s", err)
 		} else {
-			Log.Errorln("invalid access token file")
+			authToken.RefreshToken = password
+			a.Atoken = &authToken
 		}
 
 	}
@@ -194,15 +250,21 @@ func (a *AuthClient) GetStoredAuthz() (err error) {
 
 func (a *AuthClient) SetStoredAuthz() (err error) {
 	a.Aconfig.LogSetup()
-	if a.Aconfig.StoreAuthz == true {
-		str, err := json.Marshal(a.Atoken)
-		viper.Set("AccessToken", base64.StdEncoding.EncodeToString(str))
-		err = viper.WriteConfigAs("auth.json")
-		if err != nil {
-			Log.Error("snap: could not write config file")
+	if a.Aconfig.StoreAuthz == true && a.Atoken != nil && a.Atoken.RefreshToken != "" {
 
-			return StoreTokenErr
+		// Create a keychain
+		keychain, err := keyTar.GetKeychain()
+		if err != nil {
+			Log.Errorf("unable to create keychain, %s", err)
+			return err
 		}
+		// Add a password
+		err = keyTar.ReplacePassword(keychain, a.KeytarService, a.KeytarAccount, a.Atoken.RefreshToken)
+		if err != nil {
+			Log.Errorf("access token addition failed")
+			return err
+		}
+
 	}
 	return nil
 

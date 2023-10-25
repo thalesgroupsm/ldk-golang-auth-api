@@ -22,10 +22,9 @@ type Environment struct {
 	ClientSecret        string `env:"SNTL_CLIENT_SECRET"           default:""                             required:"false"  description:"client secret"              long:"client_secret"`
 	RedirectUri         string `env:"SNTL_REDIRECT_URI"            default:"http://localhost/v1/callback" required:"true"   description:"REDIRECT uri"               long:"redirect-uri"`
 	LogLevel            string `env:"SNTL_LOG_LEVEL"               default:"INFO"                         required:"true"   description:"log level"                  long:"log-level"`
-	VendorId            string `env:"SNTL_VENDOR_ID"               default:"37515"                        required:"true"   description:"vendor id"                  long:"vendor-id"`
 	WelcomeFileName     string `env:"SNTL_WELCOME_FILE_NAME"       default:"wlecome.html"                 required:"true"   description:"welcome file name"          long:"welcome-file-name"`
 	CodeChallengeMethod string `env:"SNTL_CODE_CHALLENGE_METHOD"   default:"S256"                         required:"true"   description:"code challenge method"      long:"code-challenge-method"`
-	Scope               string `env:"SNTL_SCOPE"                   default:"scope"                        required:"true"   description:"profile scope"              long:"scope"`
+	Scope               string `env:"SNTL_SCOPE"                   default:""                        required:"true"   description:"profile scope"              long:"scope"`
 	GrantType           string `env:"SNTL_GRANT_TYPE"              default:"authorization_code"           required:"true"   description:"grant type"                 long:"grant-type"`
 	StoreAuthz          bool   `env:"SNTL_STORE_AUTHZ"                                    required:"false"   description:"store authz"                long:"store-authz"`
 }
@@ -124,17 +123,21 @@ func main() {
 
 	AClient = auth.NewAuthClient(Config)
 	if AClient != nil {
-		err = AClient.GetStoredAuthz()
-		if err != nil {
-			err = AClient.AuthorizeUser(context.Background())
-			if err == nil {
-				AClient.SetStoredAuthz()
+		if Env.StoreAuthz == true {
+			err = AClient.GetStoredAuthz()
+			if err != nil {
+				Log.Errorf("get stored authz failed, %s", err)
 			}
 		}
 
+		err = AClient.AuthorizeUser(context.Background())
+		if err == nil && Env.StoreAuthz == true {
+			AClient.SetStoredAuthz()
+		}
+
 	}
-	L = licenseApi.NewLicenseApi(Env.VendorId)
+	L = licenseApi.NewLicenseApi()
 	//hasp_config(accsstoken)
-	LoginByIdentity(L, "792409087108542559")
+	LoginByIdentity(L, "6526506242255103")
 
 }
